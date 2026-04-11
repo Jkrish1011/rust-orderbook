@@ -1,0 +1,11 @@
+[package]
+name = "rust-orderbook"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+clap = "4.6.0"
+etherparse = "0.19.0"
+pcap = "2.4.0"
+thiserror = "2.0.18"
