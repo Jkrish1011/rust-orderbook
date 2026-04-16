@@ -1,0 +1,44 @@
+Item Name	                            Length	   Offset           Remark
+Data Type	                            2	        0               B6
+Information Type	                    2	        2               03
+Market Type	                            1	        4               4
+Issue code	                            12	        5               ISIN code
+Issue seq.-no.	                        3	        17
+Market Status Type	                    2	        20
+Total bid quote volume	                7	        22
+Best bid price(1st)	                    5	        29              Decimals
+Best bid quantity(1st)	                7	        34              Decimals
+Best bid price(2nd)	                    5	        41
+Best bid quantity(2nd)	                7	        46
+Best bid price(3rd)	                    5	        53
+Best bid quantity(3rd)	                7	        58
+Best bid price(4th)	                    5	        65
+Best bid quantity(4th)	                7	        70
+Best bid price(5th)	                    5	        77
+Best bid quantity(5th)	                7	        82
+Total ask quote volume	                7	        89
+Best ask price(1st)	                    5	        96
+Best ask quantity(1st)	                7	        101
+Best ask price(2nd)	                    5	        108
+Best ask quantity(2nd)	                7	        113
+Best ask price(3rd)	                    5	        120
+Best ask quantity(3rd)	                7	        125
+Best ask price(4th)	                    5	        132
+Best ask quantity(4th)	                7	        137
+Best ask price(5th)	                    5	        144
+Best ask quantity(5th)	                7	        149
+No. of best bid valid quote(total)	    5	        156
+No. of best bid quote(1st)	            4	        161
+No. of best bid quote(2nd)	            4	        165
+No. of best bid quote(3rd)	            4	        169
+No. of best bid quote(4th)	            4	        173
+No. of best bid quote(5th)	            4	        177
+No. of best ask valid quote(total)	    5	        181
+No. of best ask quote(1st)	            4	        186
+No. of best ask quote(2nd)	            4	        190
+No. of best ask quote(3rd)	            4	        194
+No. of best ask quote(4th)	            4	        198
+No. of best ask quote(5th)	            4	        202
+Quote accept time	                    8	        206             HHMMSSuu
+End of Message	                        1           214             0xff
+                                                    215
