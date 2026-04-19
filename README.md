@@ -16,3 +16,90 @@ A command-line tool, written in Rust, that extracts and prints quote messages fr
     - Track the maximum observed packet timestamp and flush buffered messages whose accept time is older than (max_packet_time - 3s).
 
 - Designed to work efficiently on files larger than available RAM: minimal allocations, byte-slice parsing, and streaming pcap reading.
+
+
+### To run the program
+
+```
+cargo run --release -- --file "./data/mdf-kospi200.20110216-0.pcap" -r > ./output/output.txt
+```
+
+### Timed outputs
+
+```
+time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap -r > /dev/null
+
+real    0m0.056s
+user    0m0.037s
+sys     0m0.020s
+```
+
+
+
+```
+time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap > /dev/null
+
+real    0m0.045s
+user    0m0.030s
+sys     0m0.018s
+```
+
+
+### System configuration
+
+> Architecture: x86_64 — Intel(R) Core(TM) i7-4770HQ @ 2.20GHz
+
+```text
+Architecture:                x86\_64
+CPU op-mode(s):             32-bit, 64-bit
+Address sizes:              39 bits physical, 48 bits virtual
+Byte Order:                 Little Endian
+
+CPU(s):                     8
+On-line CPU(s) list:        0-7
+Vendor ID:                  GenuineIntel
+Model name:                 Intel(R) Core(TM) i7-4770HQ CPU @ 2.20GHz
+CPU family:                 6
+Model:                      70
+Thread(s) per core:         2
+Core(s) per socket:         4
+Socket(s):                  1
+Stepping:                   1
+CPU(s) scaling MHz:         58%
+CPU max MHz:                3400.0000
+CPU min MHz:                800.0000
+BogoMIPS:                   4389.93
+
+
+Virtualization features:
+Virtualization:             VT-x
+
+Caches (sum of all):
+L1d:                        128 KiB (4 instances)
+L1i:                        128 KiB (4 instances)
+L2:                         1 MiB (4 instances)
+L3:                         6 MiB (1 instance)
+L4:                         128 MiB (1 instance)
+
+NUMA:
+NUMA node(s):               1
+NUMA node0 CPU(s):          0-7
+
+Vulnerabilities:
+Gather data sampling:       Not affected
+Indirect target selection:  Not affected
+Itlb multihit:              KVM: Mitigation: VMX disabled
+L1tf:                       Mitigation; PTE Inversion; VMX conditional cache flushes, SMT vulnerable
+Mds:                        Mitigation; Clear CPU buffers; SMT vulnerable
+Meltdown:                   Mitigation; PTI
+Mmio stale data:            Unknown: No mitigations
+Reg file data sampling:     Not affected
+Retbleed:                   Not affected
+Spec rstack overflow:       Not affected
+Spec store bypass:          Mitigation; Speculative Store Bypass disabled via prctl
+Spectre v1:                 Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Spectre v2:                 Mitigation; Retpolines; IBPB conditional; IBRS\_FW; STIBP conditional; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Srbds:                      Mitigation; Microcode
+Tsa:                        Not affected
+Tsx async abort:            Not affected
+Vmscape:                    Mitigation; IBPB before exit to userspace

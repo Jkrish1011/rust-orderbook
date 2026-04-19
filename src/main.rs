@@ -15,12 +15,12 @@ use std::{
     io::{self, BufWriter, Write},
     sync::Arc,
     thread,
-    time::Instant,
+    time::{Instant},
 };
 
 use crate::error::CustomError;
 use crate::packet::{QUOTE_PACKET_SIZE, QuoteMeta, QuotePacketView};
-use crate::parser::{CustomPcapReader, PcapPktHdr};
+use crate::parser::{CustomPcapReader};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -31,7 +31,6 @@ struct Args {
     #[arg(short, long)]
     file: String,
 }
-
 
 #[inline(never)]
 fn print_quote<W: Write>(
@@ -97,7 +96,7 @@ fn main() -> Result<(), CustomError> {
     let start = Instant::now();
     let args = Args::parse();
 
-    let queue = Arc::new(ArrayQueue::<QuoteMeta>::new(1 << 16));
+    let queue = Arc::new(ArrayQueue::<QuoteMeta>::new(1 << 20));
     let done = Arc::new(AtomicBool::new(false));
     // Get list of available core IDs
     let core_ids = core_affinity::get_core_ids().unwrap();
@@ -110,8 +109,8 @@ fn main() -> Result<(), CustomError> {
         println!("Disabled");
     }
 
-    let file = File::open(&args.file)
-        .map_err(|e| CustomError::ParseError(format!("Error: {:?}", e)))?;
+    let file =
+        File::open(&args.file).map_err(|e| CustomError::ParseError(format!("Error: {:?}", e)))?;
     let mmap = unsafe {
         Mmap::map(&file)
             .map_err(|e| CustomError::InvalidPacketStructure(format!("Error: {:?}", e)))?
@@ -123,7 +122,7 @@ fn main() -> Result<(), CustomError> {
     let done_reader = done.clone();
 
     let reader = thread::spawn(move || {
-        
+
         if core_affinity::set_for_current(core_reader) {
             println!("Thread pinned to core {:?}", core_reader);
         } else {
@@ -134,9 +133,11 @@ fn main() -> Result<(), CustomError> {
 
         // let mut cap = PcapReader::new(data).unwrap();
         let mut custom_reader = CustomPcapReader::new(&mmap_reader);
+
         let base_ptr = mmap_reader.as_ptr() as usize;
 
         for (hdr, packet) in custom_reader {
+            
             let Ok(value) = SlicedPacket::from_ethernet(packet) else {
                 continue;
             };
@@ -151,7 +152,6 @@ fn main() -> Result<(), CustomError> {
             let Some(qp_view) = QuotePacketView::try_new(&payload, d_port) else {
                 continue;
             };
-
             let accept_time = qp_view.accept_time();
             let ts_sec = hdr.ts_sec as u64;
             let ts_usec = hdr.ts_usec as u64;
@@ -176,7 +176,6 @@ fn main() -> Result<(), CustomError> {
         }
 
         done_reader.store(true, Ordering::Release);
-        
     });
 
     let mmap_writer = mmap.clone();
@@ -190,15 +189,12 @@ fn main() -> Result<(), CustomError> {
             eprintln!("Failed to pin thread");
         }
 
-        let stdout = io::stdout();
-        let lock = stdout.lock();
 
-        let mut out = BufWriter::with_capacity(1 << 20, lock);
+        let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
         let mut heap = BinaryHeap::new();
         let window_micros = 3_000_000;
-
         loop {
-            if let Some(meta) = queue_writer.pop() {
+            while let Some(meta) = queue_writer.pop() {
                 if args.r {
                     heap.push(meta);
 
@@ -217,13 +213,30 @@ fn main() -> Result<(), CustomError> {
                     let view = QuotePacketView::new_unchecked(slice).unwrap();
                     let _ = print_quote(&mut out, &view, meta.pkt_time, meta.accept_time);
                 }
-            } else if done_writer.load(Ordering::Acquire) {
-                // IMPORTANT: The reader is done, but the queue might have had 
-                // a few items pushed right before 'done' was set. 
-                // Check one last time.
-                if queue_writer.is_empty() {
-                    break; 
+            }
+
+            if done_writer.load(Ordering::Acquire) {
+                while let Some(meta) = queue_writer.pop() {
+                    if args.r {
+                        heap.push(meta);
+
+                        while let Some(oldest) = heap.peek() {
+                            if meta.pkt_time > oldest.accept_time + window_micros {
+                                let q = heap.pop().unwrap();
+                                let slice = &mmap_writer[q.offset..q.offset + QUOTE_PACKET_SIZE];
+                                let view = QuotePacketView::new_unchecked(slice).unwrap();
+                                let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
+                            } else {
+                                break; // from heap peek
+                            }
+                        }
+                    } else {
+                        let slice = &mmap_writer[meta.offset..meta.offset + QUOTE_PACKET_SIZE];
+                        let view = QuotePacketView::new_unchecked(slice).unwrap();
+                        let _ = print_quote(&mut out, &view, meta.pkt_time, meta.accept_time);
+                    }
                 }
+                break;
             } else {
                 std::hint::spin_loop();
             }
@@ -237,7 +250,7 @@ fn main() -> Result<(), CustomError> {
                 let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
             }
         }
-        
+
         out.flush().unwrap(); // Ensure everything is written to stdout
     });
 

@@ -1,4 +1,3 @@
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Endianness {
     Little,
@@ -47,14 +46,13 @@ fn parse_global_header(mmap: &[u8]) -> PcapMeta {
 
 #[repr(C)]
 pub struct PcapPktHdr {
-    pub ts_sec: u32, // Since EPOCH
+    pub ts_sec: u32,  // Since EPOCH
     pub ts_usec: u32, // Since EPOCH
     pub incl_len: u32,
     pub orig_len: u32,
 }
 
 impl PcapPktHdr {
-
     #[inline(always)]
     fn read_u32(bytes: &[u8], endian: Endianness) -> u32 {
         match endian {
@@ -81,7 +79,6 @@ pub struct CustomPcapReader<'a> {
     pub meta: PcapMeta,
 }
 
-
 impl<'a> CustomPcapReader<'a> {
     pub fn new(mmap: &'a [u8]) -> Self {
         let meta = parse_global_header(mmap);
@@ -102,7 +99,7 @@ impl<'a> Iterator for CustomPcapReader<'a> {
         }
 
         let hdr_bytes = &self.mmap[self.offset..self.offset + 16];
-        
+
         // Added PcapPktHdr:: prefix
         let hdr = PcapPktHdr::parse_pkt_hdr(hdr_bytes, &self.meta);
 
