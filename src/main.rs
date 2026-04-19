@@ -4,14 +4,16 @@ mod packet;
 use anyhow::Result;
 use clap::Parser;
 use etherparse::{SlicedPacket, TransportSlice};
-
-use std::path::Path;
-
 use memmap2::Mmap;
 use pcap_file::pcap::PcapReader;
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::fs::File;
+use std::{
+    collections::BinaryHeap,
+    fs::File,
+    io::{
+        self, Write, BufWriter
+    },
+    time::Instant,
+};
 
 use crate::error::CustomError;
 use crate::packet::{Quote, QuotePacketView};
@@ -23,7 +25,8 @@ struct Args {
     r: bool,
 }
 
-fn print_quote(quote: Quote) {
+#[inline(never)]
+fn print_quote<W: Write>(out: &mut W, quote: Quote) -> io::Result<()> {
     let (bid_price1, bid_qty1) = quote.quote.bid(0);
     let (bid_price2, bid_qty2) = quote.quote.bid(1);
     let (bid_price3, bid_qty3) = quote.quote.bid(2);
@@ -46,8 +49,9 @@ fn print_quote(quote: Quote) {
     // println!("Ask 3: {:?}@{:?}", ask_price3, ask_qty3);
     // println!("Ask 4: {:?}@{:?}", ask_price4, ask_qty4);
     // println!("Ask 5: {:?}@{:?}", ask_price5, ask_qty5);
-    println!(
-        "{:?} {:?} {:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?} {:?}@{:?}",
+    writeln!(
+        out, 
+        "{} {} {} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{}",
         quote.pkt_time,
         quote.accept_time,
         quote.quote.issue_code(),
@@ -71,11 +75,14 @@ fn print_quote(quote: Quote) {
         ask_price2,
         ask_qty1,
         ask_price1
-    );
-    println!("---");
+    )?;
+    
+
+    Ok(())
 }
 
 fn main() -> Result<(), CustomError> {
+    let start = Instant::now();
     let args = Args::parse();
 
     if args.r {
@@ -84,17 +91,22 @@ fn main() -> Result<(), CustomError> {
         println!("Disabled");
     }
 
+    let stdout = io::stdout();
+    let lock = stdout.lock();
+
+    let mut out = BufWriter::with_capacity(1 << 20 , lock);
+
     let file = File::open("./data/mdf-kospi200.20110216-0.pcap")
         .map_err(|e| CustomError::ParseError(format!("Error: {:?}", e)))?;
     let mmap = unsafe {
-        Mmap::map(&file).map_err(|e| CustomError::ParseError(format!("Error: {:?}", e)))?
+        Mmap::map(&file).map_err(|e| CustomError::InvalidPacketStructure(format!("Error: {:?}", e)))?
     };
-    let data = &mmap[..];
+    let data: &[u8] = &mmap[..];
 
     let mut cap = PcapReader::new(data)
-        .map_err(|e| CustomError::ParseError(format!("Pcap Header Error: {:?}", e)))?;
+        .map_err(|e| CustomError::InvalidPacketStructure(format!("Pcap Header Error: {:?}", e)))?;
 
-    let mut heap = BinaryHeap::new();
+    let mut heap: BinaryHeap<Quote<'_>> = BinaryHeap::new();
     let window_micros: u64 = 3_000_000; // 3 seconds
 
     // let s_idx = start_bytes.len();
@@ -113,12 +125,12 @@ fn main() -> Result<(), CustomError> {
         match SlicedPacket::from_ethernet(raw_payload) {
             Ok(value) => {
                 match value.transport {
-                    Some(etherparse::TransportSlice::Udp(udp)) => {
+                    Some(TransportSlice::Udp(udp)) => {
                         let payload = udp.payload();
                         let d_port = udp.destination_port();
                         // Check for the start byte which we are interested in.
 
-                        let Some(quote_packet) = QuotePacketView::try_new(&payload) else {
+                        let Some(quote_packet) = QuotePacketView::try_new(&payload, d_port) else {
                             continue;
                         };
                         
@@ -144,13 +156,13 @@ fn main() -> Result<(), CustomError> {
                             while let Some(oldest) = heap.peek() {
                                 if normalized_pkt_micros > oldest.accept_time + window_micros {
                                     let curr_quote = heap.pop().unwrap();
-                                    print_quote(curr_quote);
+                                    let _ = print_quote(&mut out, curr_quote);
                                 } else {
                                     break; // from heap peek
                                 }
                             }
                         } else {
-                            print_quote(item);
+                            let _ = print_quote(&mut out, item);
                         }
                     }
                     _ => {}
@@ -161,8 +173,12 @@ fn main() -> Result<(), CustomError> {
     }
 
     while let Some(remaining_quote) = heap.pop() {
-        print_quote(remaining_quote);
+        let _ = print_quote(&mut out, remaining_quote);
     }
+
+    out.flush().map_err(|e| CustomError::ParseError(format!("Flush Error: {:?}", e)))?;
+    let elapsed = start.elapsed();
+    println!("Total Time Elapsed: {:.3} s", elapsed.as_secs_f64());
 
     Ok(())
 }

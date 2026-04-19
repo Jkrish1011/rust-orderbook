@@ -20,22 +20,20 @@ pub struct Quote<'a> {
 
 // We want a Min-Heap, so we reverse the ordering of accept_time
 impl<'a> Ord for Quote<'a> {
-    #[inline(always)]
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse standard ordering to make BinaryHeap a Min-Heap
-        other.accept_time.cmp(&self.accept_time)
+        // Compare the pkt_time also for tie values of accept_time
+        other.accept_time.cmp(&self.accept_time).then_with(|| other.pkt_time.cmp(&self.pkt_time))
     }
 }
 
 impl<'a> PartialOrd for Quote<'a> {
-    #[inline(always)]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl<'a> PartialEq for Quote<'a> {
-    #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.accept_time == other.accept_time
     }
@@ -50,10 +48,11 @@ pub struct QuotePacketView<'a> {
 
 impl<'a> QuotePacketView<'a> {
     #[inline(always)]
-    pub fn try_new(raw: &'a [u8]) -> Option<Self> {
+    pub fn try_new(raw: &'a [u8], port: u16) -> Option<Self> {
         if raw.len() == QUOTE_PACKET_SIZE
             && &raw[0..5] == QUOTE_PREFIX
-            && raw[END_OF_PACKET] == 0xFF
+            && raw[END_OF_PACKET] == 0xFF 
+            && (port == 15515 || port == 15516)
         {
             Some(Self { raw })
         } else {
@@ -92,7 +91,9 @@ impl<'a> QuotePacketView<'a> {
 
         // // Formula: (hours * 3600 + minutes * 60 + seconds) * 1,000,000 + microseconds
         // let t = (hh * 3600 + mm * 60 + ss) * 1_000_000 + uu;
-        let time_ref = &self.raw[ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1])];
+        let time_ref = unsafe {
+            self.raw.get_unchecked(ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1]))
+        };
 
         // Explore get_unchecked to unlock more speed
         let hh = (time_ref[0] as u64 - 48) * 10 + (time_ref[1] as u64 - 48);
