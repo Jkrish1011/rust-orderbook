@@ -1,12 +1,14 @@
 mod error;
 mod packet;
+mod parser;
 
 use anyhow::Result;
 use clap::Parser;
 use crossbeam::queue::ArrayQueue;
 use etherparse::{SlicedPacket, TransportSlice};
 use memmap2::Mmap;
-use pcap_file::pcap::PcapReader;
+use std::sync::atomic::{AtomicBool, Ordering};
+// use pcap_file::pcap::PcapReader;
 use std::{
     collections::BinaryHeap,
     fs::File,
@@ -18,16 +20,26 @@ use std::{
 
 use crate::error::CustomError;
 use crate::packet::{QUOTE_PACKET_SIZE, QuoteMeta, QuotePacketView};
+use crate::parser::{CustomPcapReader, PcapPktHdr};
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
     #[arg(short)]
     r: bool,
+
+    #[arg(short, long)]
+    file: String,
 }
 
+
 #[inline(never)]
-fn print_quote<W: Write>(out: &mut W, quote: &QuotePacketView, pkt_time: u64, accept_time: u64) -> io::Result<()> {
+fn print_quote<W: Write>(
+    out: &mut W,
+    quote: &QuotePacketView,
+    pkt_time: u64,
+    accept_time: u64,
+) -> io::Result<()> {
     let (bid_price1, bid_qty1) = quote.bid(0);
     let (bid_price2, bid_qty2) = quote.bid(1);
     let (bid_price3, bid_qty3) = quote.bid(2);
@@ -86,6 +98,7 @@ fn main() -> Result<(), CustomError> {
     let args = Args::parse();
 
     let queue = Arc::new(ArrayQueue::<QuoteMeta>::new(1 << 16));
+    let done = Arc::new(AtomicBool::new(false));
     // Get list of available core IDs
     let core_ids = core_affinity::get_core_ids().unwrap();
     let core_reader = core_ids[0];
@@ -97,7 +110,7 @@ fn main() -> Result<(), CustomError> {
         println!("Disabled");
     }
 
-    let file = File::open("./data/mdf-kospi200.20110216-0.pcap")
+    let file = File::open(&args.file)
         .map_err(|e| CustomError::ParseError(format!("Error: {:?}", e)))?;
     let mmap = unsafe {
         Mmap::map(&file)
@@ -107,8 +120,10 @@ fn main() -> Result<(), CustomError> {
 
     let mmap_reader = mmap.clone();
     let queue_reader = queue.clone();
+    let done_reader = done.clone();
 
     let reader = thread::spawn(move || {
+        
         if core_affinity::set_for_current(core_reader) {
             println!("Thread pinned to core {:?}", core_reader);
         } else {
@@ -117,14 +132,12 @@ fn main() -> Result<(), CustomError> {
 
         let data: &[u8] = &mmap_reader[..];
 
-        let mut cap = PcapReader::new(data).unwrap();
-
+        // let mut cap = PcapReader::new(data).unwrap();
+        let mut custom_reader = CustomPcapReader::new(&mmap_reader);
         let base_ptr = mmap_reader.as_ptr() as usize;
 
-        while let Some(Ok(packet)) = cap.next_packet() {
-            let raw_payload = packet.data.as_ref();
-
-            let Ok(value) = SlicedPacket::from_ethernet(raw_payload) else {
+        for (hdr, packet) in custom_reader {
+            let Ok(value) = SlicedPacket::from_ethernet(packet) else {
                 continue;
             };
 
@@ -140,8 +153,8 @@ fn main() -> Result<(), CustomError> {
             };
 
             let accept_time = qp_view.accept_time();
-            let ts_sec = packet.timestamp.as_secs();
-            let ts_usec = packet.timestamp.subsec_micros() as u64;
+            let ts_sec = hdr.ts_sec as u64;
+            let ts_usec = hdr.ts_usec as u64;
 
             let tz_offset_secs = 9 * 3600;
             let seconds_today = (ts_sec + tz_offset_secs) % 86400;
@@ -161,10 +174,14 @@ fn main() -> Result<(), CustomError> {
                 std::hint::spin_loop();
             }
         }
+
+        done_reader.store(true, Ordering::Release);
+        
     });
 
     let mmap_writer = mmap.clone();
     let queue_writer = queue.clone();
+    let done_writer = done.clone();
 
     let writer = thread::spawn(move || {
         if core_affinity::set_for_current(core_writer) {
@@ -200,10 +217,28 @@ fn main() -> Result<(), CustomError> {
                     let view = QuotePacketView::new_unchecked(slice).unwrap();
                     let _ = print_quote(&mut out, &view, meta.pkt_time, meta.accept_time);
                 }
+            } else if done_writer.load(Ordering::Acquire) {
+                // IMPORTANT: The reader is done, but the queue might have had 
+                // a few items pushed right before 'done' was set. 
+                // Check one last time.
+                if queue_writer.is_empty() {
+                    break; 
+                }
             } else {
                 std::hint::spin_loop();
             }
         }
+
+        // Drain the heap
+        if args.r {
+            while let Some(q) = heap.pop() {
+                let slice = &mmap_writer[q.offset..q.offset + QUOTE_PACKET_SIZE];
+                let view = QuotePacketView::new_unchecked(slice).unwrap();
+                let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
+            }
+        }
+        
+        out.flush().unwrap(); // Ensure everything is written to stdout
     });
 
     reader.join().unwrap();

@@ -105,10 +105,10 @@ impl<'a> QuotePacketView<'a> {
         };
 
         // Explore get_unchecked to unlock more speed
-        let hh = (time_ref[0] as u64 - 48) * 10 + (time_ref[1] as u64 - 48);
-        let mm = (time_ref[2] as u64 - 48) * 10 + (time_ref[3] as u64 - 48);
-        let ss = (time_ref[4] as u64 - 48) * 10 + (time_ref[5] as u64 - 48);
-        let uu = (time_ref[6] as u64 - 48) * 10 + (time_ref[7] as u64 - 48);
+        let hh = ((time_ref[0] & 0x0F) as u64) * 10 + ((time_ref[1] & 0x0F) as u64);
+        let mm = ((time_ref[2] & 0x0F) as u64) * 10 + ((time_ref[3] & 0x0F) as u64);
+        let ss = ((time_ref[4] & 0x0F) as u64) * 10 + ((time_ref[5] & 0x0F) as u64);
+        let uu = ((time_ref[6] & 0x0F) as u64) * 10 + ((time_ref[7] & 0x0F) as u64);
 
         // let total_secs = hh * 3600 + mm * 60 + ss;
         // let t2 = (total_secs * 1_000_000) + (uu);
