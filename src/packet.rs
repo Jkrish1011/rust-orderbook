@@ -12,34 +12,37 @@ pub const LEVEL_STRIDE: usize = 12;
 pub const END_OF_PACKET: usize = 214;
 
 #[derive(Debug, Clone, Copy)]
-pub struct Quote<'a> {
-    pub pkt_time: u64,              // for the 3-sec window math
-    pub accept_time: u64,           // storing in heap
-    pub quote: QuotePacketView<'a>, // Zero-copy ref to the mmap
+pub struct QuoteMeta {
+    pub pkt_time: u64,    // for the 3-sec window math
+    pub accept_time: u64, // storing in heap
+    pub offset: usize,    // Zero-copy ref to the mmap
 }
 
 // We want a Min-Heap, so we reverse the ordering of accept_time
-impl<'a> Ord for Quote<'a> {
+impl Ord for QuoteMeta {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse standard ordering to make BinaryHeap a Min-Heap
         // Compare the pkt_time also for tie values of accept_time
-        other.accept_time.cmp(&self.accept_time).then_with(|| other.pkt_time.cmp(&self.pkt_time))
+        other
+            .accept_time
+            .cmp(&self.accept_time)
+            .then_with(|| other.pkt_time.cmp(&self.pkt_time))
     }
 }
 
-impl<'a> PartialOrd for Quote<'a> {
+impl PartialOrd for QuoteMeta {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<'a> PartialEq for Quote<'a> {
+impl PartialEq for QuoteMeta {
     fn eq(&self, other: &Self) -> bool {
         self.accept_time == other.accept_time
     }
 }
 
-impl<'a> Eq for Quote<'a> {}
+impl Eq for QuoteMeta {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct QuotePacketView<'a> {
@@ -51,13 +54,18 @@ impl<'a> QuotePacketView<'a> {
     pub fn try_new(raw: &'a [u8], port: u16) -> Option<Self> {
         if raw.len() == QUOTE_PACKET_SIZE
             && &raw[0..5] == QUOTE_PREFIX
-            && raw[END_OF_PACKET] == 0xFF 
+            && raw[END_OF_PACKET] == 0xFF
             && (port == 15515 || port == 15516)
         {
             Some(Self { raw })
         } else {
             None
         }
+    }
+
+    #[inline(always)]
+    pub fn new_unchecked(raw: &'a [u8]) -> Option<Self> {
+        Some(Self { raw })
     }
 
     #[inline(always)]
@@ -92,7 +100,8 @@ impl<'a> QuotePacketView<'a> {
         // // Formula: (hours * 3600 + minutes * 60 + seconds) * 1,000,000 + microseconds
         // let t = (hh * 3600 + mm * 60 + ss) * 1_000_000 + uu;
         let time_ref = unsafe {
-            self.raw.get_unchecked(ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1]))
+            self.raw
+                .get_unchecked(ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1]))
         };
 
         // Explore get_unchecked to unlock more speed
@@ -120,13 +129,12 @@ impl<'a> QuotePacketView<'a> {
         // println!("raw_price: {:?}", std::str::from_utf8(raw_price));
         // println!("raw_qty: {:?}", std::str::from_utf8(raw_qty));
 
-        let price = Self::parse_ascii_to_u32(
-            &self.raw[price_start..(price_start + BID_FIRST_PRICE_META[1])],
-        );
-        let qty =
-            Self::parse_ascii_to_u32(&self.raw[qty_start..(qty_start + BID_FIRST_QTY_META[1])]);
-
-        (price, qty)
+        (
+            Self::parse_ascii_to_u32(
+                &self.raw[price_start..(price_start + BID_FIRST_PRICE_META[1])],
+            ),
+            Self::parse_ascii_to_u32(&self.raw[qty_start..(qty_start + BID_FIRST_QTY_META[1])]),
+        )
     }
 
     #[inline(always)]
@@ -135,12 +143,11 @@ impl<'a> QuotePacketView<'a> {
         let price_start = ASK_FIRST_PRICE_META[0] + base;
         let qty_start = ASK_FIRST_QTY_META[0] + base;
 
-        let price = Self::parse_ascii_to_u32(
-            &self.raw[price_start..(price_start + ASK_FIRST_PRICE_META[1])],
-        );
-        let qty =
-            Self::parse_ascii_to_u32(&self.raw[qty_start..(qty_start + ASK_FIRST_QTY_META[1])]);
-
-        (price, qty)
+        (
+            Self::parse_ascii_to_u32(
+                &self.raw[price_start..(price_start + ASK_FIRST_PRICE_META[1])],
+            ),
+            Self::parse_ascii_to_u32(&self.raw[qty_start..(qty_start + ASK_FIRST_QTY_META[1])]),
+        )
     }
 }
