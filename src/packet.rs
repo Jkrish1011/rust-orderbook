@@ -1,6 +1,5 @@
 use std::{
-    cmp::Ordering,
-    io::{self, BufWriter, Write},
+    io::{self, Write},
 };
 
 pub const QUOTE_PACKET_SIZE: usize = 215;
@@ -13,17 +12,16 @@ pub const ASK_FIRST_PRICE_META: &[usize; 2] = &[96, 5];
 pub const ASK_FIRST_QTY_META: &[usize; 2] = &[101, 7];
 pub const LEVEL_STRIDE: usize = 12;
 pub const END_OF_PACKET: usize = 214;
-
-#[derive(Debug, Clone, Copy)]
-pub struct QuoteMeta {
-    pub pkt_time: u64,    // for the 3-sec window math
-    pub accept_time: u64, // storing in heap
-    pub offset: usize,    // Zero-copy ref to the mmap
-}
-
-const NUM_BUCKETS: usize = 2048;
-const MASK: u64 = 2047;
+const NUM_BUCKETS: usize = 512;
+const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
+
+// #[derive(Debug, Clone, Copy)]
+// pub struct QuoteMeta {
+//     pub pkt_time: u64,    // for the 3-sec window math
+//     pub accept_time: u64, // storing in heap
+//     pub offset: usize,    // Zero-copy ref to the mmap
+// }
 
 pub struct HftWindow<'a> {
     buckets: Vec<Vec<(QuotePacketView<'a>, u64, u64)>>, // Pre-allocated array of arrays
@@ -35,7 +33,7 @@ impl<'a> HftWindow<'a> {
         let mut buckets = Vec::with_capacity(NUM_BUCKETS);
         for _ in 0..NUM_BUCKETS {
             // Guessing max 32768 packets arrive in the exact same 10ms window
-            buckets.push(Vec::with_capacity(32768));
+            buckets.push(Vec::with_capacity(128));
         }
         Self {
             buckets,
@@ -51,9 +49,11 @@ impl<'a> HftWindow<'a> {
         accept_time: u64,
         out: &mut W,
     ) {
-        // Advance time and drain old packets FIRST
-        if pkt_time > self.max_time_seen {
-            self.advance_time(pkt_time, accept_time, out);
+        let pkt_time_cs = pkt_time / 10_000;
+
+        // Advance time using the centisecond time
+        if pkt_time_cs > self.max_time_seen {
+            self.advance_time(pkt_time_cs, out);
         }
 
         // Drop the new packet into its bucket
@@ -62,7 +62,7 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, a_time: u64, out: &mut W) {
+    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W) {
         // If the gap between the new packet and the oldest allowed packet
         // is > 300cs, we must drain and print the oldest buckets.
 
@@ -74,7 +74,7 @@ impl<'a> HftWindow<'a> {
 
             // Print everything in this bucket
             for (pkt, p_time, a_time) in &self.buckets[idx] {
-                print_quote(out, &pkt, *p_time, *a_time);
+                let _ = print_quote(out, &pkt, *p_time, *a_time);
             }
 
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
@@ -91,7 +91,7 @@ impl<'a> HftWindow<'a> {
         // Print everything in this bucket
         for curr_vec in &self.buckets {
             for (pkt, p_time, a_time) in curr_vec {
-                print_quote(out, &pkt, *p_time, *a_time);
+                let _ = print_quote(out, &pkt, *p_time, *a_time);
             }
         }
     }

@@ -11,7 +11,7 @@ enum TsResolution {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct PcapMeta {
+pub struct PcapMeta {
     endian: Endianness,
     ts_res: TsResolution,
 }
