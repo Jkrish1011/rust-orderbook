@@ -26,6 +26,7 @@ cargo run --release -- --file "./data/mdf-kospi200.20110216-0.pcap" -r > ./outpu
 
 ### Timed outputs
 
+With 3 second time bound check
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap -r > /dev/null
 
@@ -34,7 +35,7 @@ user    0m0.037s
 sys     0m0.020s
 ```
 
-
+Without any time bound checks 
 
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap > /dev/null
@@ -103,3 +104,4 @@ Srbds:                      Mitigation; Microcode
 Tsa:                        Not affected
 Tsx async abort:            Not affected
 Vmscape:                    Mitigation; IBPB before exit to userspace
+```

@@ -3,24 +3,24 @@ mod packet;
 mod parser;
 
 use anyhow::Result;
+use chrono::{FixedOffset, NaiveDateTime, TimeZone, Timelike, Utc};
 use clap::Parser;
 use crossbeam::queue::ArrayQueue;
 use etherparse::{SlicedPacket, TransportSlice};
 use memmap2::Mmap;
 use std::sync::atomic::{AtomicBool, Ordering};
-// use pcap_file::pcap::PcapReader;
 use std::{
     collections::BinaryHeap,
     fs::File,
     io::{self, BufWriter, Write},
     sync::Arc,
     thread,
-    time::{Instant},
+    time::Instant,
 };
 
 use crate::error::CustomError;
-use crate::packet::{QUOTE_PACKET_SIZE, QuoteMeta, QuotePacketView};
-use crate::parser::{CustomPcapReader};
+use crate::packet::{HftWindow, QUOTE_PACKET_SIZE, QuoteMeta, QuotePacketView, print_quote};
+use crate::parser::CustomPcapReader;
 
 #[derive(Parser, Debug)]
 #[command(version, about)]
@@ -30,66 +30,6 @@ struct Args {
 
     #[arg(short, long)]
     file: String,
-}
-
-#[inline(never)]
-fn print_quote<W: Write>(
-    out: &mut W,
-    quote: &QuotePacketView,
-    pkt_time: u64,
-    accept_time: u64,
-) -> io::Result<()> {
-    let (bid_price1, bid_qty1) = quote.bid(0);
-    let (bid_price2, bid_qty2) = quote.bid(1);
-    let (bid_price3, bid_qty3) = quote.bid(2);
-    let (bid_price4, bid_qty4) = quote.bid(3);
-    let (bid_price5, bid_qty5) = quote.bid(4);
-    // println!("Bid 1: {:?}@{:?}", bid_price1, bid_qty1);
-    // println!("Bid 2: {:?}@{:?}", bid_price2, bid_qty2);
-    // println!("Bid 3: {:?}@{:?}", bid_price3, bid_qty3);
-    // println!("Bid 4: {:?}@{:?}", bid_price4, bid_qty4);
-    // println!("Bid 5: {:?}@{:?}", bid_price5, bid_qty5);
-    // println!("---");
-
-    let (ask_price1, ask_qty1) = quote.ask(0);
-    let (ask_price2, ask_qty2) = quote.ask(1);
-    let (ask_price3, ask_qty3) = quote.ask(2);
-    let (ask_price4, ask_qty4) = quote.ask(3);
-    let (ask_price5, ask_qty5) = quote.ask(4);
-    // println!("Ask 1: {:?}@{:?}", ask_price1, ask_qty1);
-    // println!("Ask 2: {:?}@{:?}", ask_price2, ask_qty2);
-    // println!("Ask 3: {:?}@{:?}", ask_price3, ask_qty3);
-    // println!("Ask 4: {:?}@{:?}", ask_price4, ask_qty4);
-    // println!("Ask 5: {:?}@{:?}", ask_price5, ask_qty5);
-    writeln!(
-        out,
-        "{} {} {} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{} {}@{}",
-        pkt_time,
-        accept_time,
-        quote.issue_code(),
-        bid_qty5,
-        bid_price5,
-        bid_qty4,
-        bid_price4,
-        bid_qty3,
-        bid_price3,
-        bid_qty2,
-        bid_price2,
-        bid_qty1,
-        bid_price1,
-        ask_qty5,
-        ask_price5,
-        ask_qty4,
-        ask_price4,
-        ask_qty3,
-        ask_price3,
-        ask_qty2,
-        ask_price2,
-        ask_qty1,
-        ask_price1
-    )?;
-
-    Ok(())
 }
 
 fn main() -> Result<(), CustomError> {
@@ -122,7 +62,6 @@ fn main() -> Result<(), CustomError> {
     let done_reader = done.clone();
 
     let reader = thread::spawn(move || {
-
         if core_affinity::set_for_current(core_reader) {
             println!("Thread pinned to core {:?}", core_reader);
         } else {
@@ -137,7 +76,6 @@ fn main() -> Result<(), CustomError> {
         let base_ptr = mmap_reader.as_ptr() as usize;
 
         for (hdr, packet) in custom_reader {
-            
             let Ok(value) = SlicedPacket::from_ethernet(packet) else {
                 continue;
             };
@@ -152,19 +90,23 @@ fn main() -> Result<(), CustomError> {
             let Some(qp_view) = QuotePacketView::try_new(&payload, d_port) else {
                 continue;
             };
+
             let accept_time = qp_view.accept_time();
-            let ts_sec = hdr.ts_sec as u64;
-            let ts_usec = hdr.ts_usec as u64;
+            let packet_epoch = hdr.ts_sec as i64;
+            let packet_sub_us = hdr.ts_usec as u32; // or hdr.ts_nsec for nsec case
 
-            let tz_offset_secs = 9 * 3600;
-            let seconds_today = (ts_sec + tz_offset_secs) % 86400;
+            let kst = FixedOffset::east_opt(9 * 3600).unwrap();
+            let dt_utc = NaiveDateTime::from_timestamp_opt(packet_epoch, 0).unwrap();
+            let dt_kst = chrono::DateTime::<Utc>::from_utc(dt_utc, Utc).with_timezone(&kst);
 
-            let normalized_pkt_micros = (seconds_today as u64 * 1_000_000) + ts_usec;
+            // microseconds since midnight in KST
+            let pkt_micros_of_day =
+                dt_kst.time().num_seconds_from_midnight() as u64 * 1_000_000 + packet_sub_us as u64;
 
             let offset = payload.as_ptr() as usize - base_ptr;
 
             let meta = QuoteMeta {
-                pkt_time: normalized_pkt_micros,
+                pkt_time: pkt_micros_of_day,
                 accept_time,
                 offset,
             };
@@ -189,25 +131,17 @@ fn main() -> Result<(), CustomError> {
             eprintln!("Failed to pin thread");
         }
 
-
         let mut out = BufWriter::with_capacity(1 << 20, io::stdout());
-        let mut heap = BinaryHeap::new();
+        let mut hft_window = HftWindow::new();
+
         let window_micros = 3_000_000;
         loop {
             while let Some(meta) = queue_writer.pop() {
                 if args.r {
-                    heap.push(meta);
+                    let slice = &mmap_writer[meta.offset..meta.offset + QUOTE_PACKET_SIZE];
+                    let view = QuotePacketView::new_unchecked(slice).unwrap();
 
-                    while let Some(oldest) = heap.peek() {
-                        if meta.pkt_time > oldest.accept_time + window_micros {
-                            let q = heap.pop().unwrap();
-                            let slice = &mmap_writer[q.offset..q.offset + QUOTE_PACKET_SIZE];
-                            let view = QuotePacketView::new_unchecked(slice).unwrap();
-                            let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
-                        } else {
-                            break; // from heap peek
-                        }
-                    }
+                    hft_window.push(view, meta.pkt_time, meta.accept_time, &mut out);
                 } else {
                     let slice = &mmap_writer[meta.offset..meta.offset + QUOTE_PACKET_SIZE];
                     let view = QuotePacketView::new_unchecked(slice).unwrap();
@@ -218,18 +152,10 @@ fn main() -> Result<(), CustomError> {
             if done_writer.load(Ordering::Acquire) {
                 while let Some(meta) = queue_writer.pop() {
                     if args.r {
-                        heap.push(meta);
+                        let slice = &mmap_writer[meta.offset..meta.offset + QUOTE_PACKET_SIZE];
+                        let view = QuotePacketView::new_unchecked(slice).unwrap();
 
-                        while let Some(oldest) = heap.peek() {
-                            if meta.pkt_time > oldest.accept_time + window_micros {
-                                let q = heap.pop().unwrap();
-                                let slice = &mmap_writer[q.offset..q.offset + QUOTE_PACKET_SIZE];
-                                let view = QuotePacketView::new_unchecked(slice).unwrap();
-                                let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
-                            } else {
-                                break; // from heap peek
-                            }
-                        }
+                        hft_window.push(view, meta.pkt_time, meta.accept_time, &mut out);
                     } else {
                         let slice = &mmap_writer[meta.offset..meta.offset + QUOTE_PACKET_SIZE];
                         let view = QuotePacketView::new_unchecked(slice).unwrap();
@@ -242,14 +168,7 @@ fn main() -> Result<(), CustomError> {
             }
         }
 
-        // Drain the heap
-        if args.r {
-            while let Some(q) = heap.pop() {
-                let slice = &mmap_writer[q.offset..q.offset + QUOTE_PACKET_SIZE];
-                let view = QuotePacketView::new_unchecked(slice).unwrap();
-                let _ = print_quote(&mut out, &view, q.pkt_time, q.accept_time);
-            }
-        }
+        hft_window.drain_all(&mut out);
 
         out.flush().unwrap(); // Ensure everything is written to stdout
     });
