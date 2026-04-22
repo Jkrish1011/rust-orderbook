@@ -16,13 +16,6 @@ const NUM_BUCKETS: usize = 512;
 const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
 
-// #[derive(Debug, Clone, Copy)]
-// pub struct QuoteMeta {
-//     pub pkt_time: u64,    // for the 3-sec window math
-//     pub accept_time: u64, // storing in heap
-//     pub offset: usize,    // Zero-copy ref to the mmap
-// }
-
 pub struct HftWindow<'a> {
     buckets: Vec<Vec<(QuotePacketView<'a>, u64, u64)>>, // Pre-allocated array of arrays
     max_time_seen: u64,
@@ -57,7 +50,7 @@ impl<'a> HftWindow<'a> {
         }
 
         // Drop the new packet into its bucket
-        let index = pkt_time & MASK;
+        let index = pkt_time_cs & MASK;
         self.buckets[index as usize].push((packet, pkt_time, accept_time));
     }
 
@@ -88,11 +81,16 @@ impl<'a> HftWindow<'a> {
 
     #[inline(always)]
     pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W) {
+        let start_time = self.max_time_seen.saturating_sub(WINDOW_LIMIT_CS);
+
         // Print everything in this bucket
-        for curr_vec in &self.buckets {
-            for (pkt, p_time, a_time) in curr_vec {
+        for t in start_time..=self.max_time_seen {
+            let idx = (t & MASK) as usize;
+
+            for (pkt, p_time, a_time) in &self.buckets[idx] {
                 let _ = print_quote(out, &pkt, *p_time, *a_time);
             }
+            self.buckets[idx].clear();
         }
     }
 }
@@ -142,6 +140,11 @@ impl<'a> QuotePacketView<'a> {
         .unwrap()
     }
 
+     #[inline(always)]
+    pub fn issue_code_raw(&self) -> &'a [u8] {
+        &self.raw[ISSUE_CODE_META[0]..(ISSUE_CODE_META[0] + ISSUE_CODE_META[1])]
+    }
+
     #[inline(always)]
     pub fn accept_time(&self) -> u64 {
         let time_ref = unsafe {
@@ -158,22 +161,50 @@ impl<'a> QuotePacketView<'a> {
     }
 
     #[inline(always)]
-    pub fn bid(&self, level: usize) -> (u32, u32) {
+    pub fn accept_time_raw(&self) -> &'a [u8] {
+        let time_ref = unsafe {
+            self.raw.get_unchecked(ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1]))
+        };
+
+        time_ref
+    }
+
+    #[inline(always)]
+    pub fn bid_raw(&self, level: usize) -> (&'a [u8], &'a [u8]) {
         let base = level * LEVEL_STRIDE;
         let price_start = BID_FIRST_PRICE_META[0] + base;
         let qty_start = BID_FIRST_QTY_META[0] + base;
 
-        // let raw_price = &self.raw[price_start..(price_start + BID_FIRST_PRICE_META[1])];
-        // let raw_qty = &self.raw[qty_start..(qty_start + BID_FIRST_QTY_META[1])];
+        (
+            &self.raw[price_start..(price_start + BID_FIRST_PRICE_META[1])],
+            &self.raw[qty_start..(qty_start + BID_FIRST_QTY_META[1])]
+        )
+    }
 
-        // println!("raw_price: {:?}", std::str::from_utf8(raw_price));
-        // println!("raw_qty: {:?}", std::str::from_utf8(raw_qty));
+    #[inline(always)]
+    pub fn bid(&self, level: usize) -> (u32, u32) {
+        let base = level * LEVEL_STRIDE;
+        let price_start = BID_FIRST_PRICE_META[0] + base;
+        let qty_start = BID_FIRST_QTY_META[0] + base;
 
         (
             Self::parse_ascii_to_u32(
                 &self.raw[price_start..(price_start + BID_FIRST_PRICE_META[1])],
             ),
             Self::parse_ascii_to_u32(&self.raw[qty_start..(qty_start + BID_FIRST_QTY_META[1])]),
+        )
+    }
+
+
+    #[inline(always)]
+    pub fn ask_raw(&self, level: usize) -> (&'a [u8], &'a [u8]) {
+        let base = level * LEVEL_STRIDE;
+        let price_start = ASK_FIRST_PRICE_META[0] + base;
+        let qty_start = ASK_FIRST_QTY_META[0] + base;
+
+        (
+            &self.raw[price_start..(price_start + ASK_FIRST_PRICE_META[1])],
+            &self.raw[qty_start..(qty_start + ASK_FIRST_QTY_META[1])]
         )
     }
 
@@ -192,13 +223,82 @@ impl<'a> QuotePacketView<'a> {
     }
 }
 
-#[inline(never)]
+
 pub fn print_quote<W: Write>(
     out: &mut W,
     quote: &QuotePacketView,
     pkt_time: u64,
     accept_time: u64,
 ) -> io::Result<()> {
+    let mut itoa_buf = itoa::Buffer::new();
+
+    let (bid_price1, bid_qty1) = quote.bid_raw(0);
+    let (bid_price2, bid_qty2) = quote.bid_raw(1);
+    let (bid_price3, bid_qty3) = quote.bid_raw(2);
+    let (bid_price4, bid_qty4) = quote.bid_raw(3);
+    let (bid_price5, bid_qty5) = quote.bid_raw(4);
+
+    let (ask_price1, ask_qty1) = quote.ask_raw(0);
+    let (ask_price2, ask_qty2) = quote.ask_raw(1);
+    let (ask_price3, ask_qty3) = quote.ask_raw(2);
+    let (ask_price4, ask_qty4) = quote.ask_raw(3);
+    let (ask_price5, ask_qty5) = quote.ask_raw(4);
+
+    out.write_all(itoa_buf.format(pkt_time).as_bytes())?;
+    out.write_all(b" ")?;
+    out.write_all(bid_qty1)?;
+    out.write_all(b"@")?;
+    out.write_all(bid_price1)?;
+    out.write_all(b" ")?;
+    out.write_all(bid_qty2)?;
+    out.write_all(b"@")?;
+    out.write_all(bid_price2)?;
+    out.write_all(b" ")?;
+    out.write_all(bid_qty3)?;
+    out.write_all(b"@")?;
+    out.write_all(bid_price3)?;
+    out.write_all(b" ")?;
+    out.write_all(bid_qty4)?;
+    out.write_all(b"@")?;
+    out.write_all(bid_price4)?;
+    out.write_all(b" ")?;
+    out.write_all(bid_qty5)?;
+    out.write_all(b"@")?;
+    out.write_all(bid_price5)?;
+    out.write_all(b" ")?;
+    out.write_all(ask_qty1)?;
+    out.write_all(b"@")?;
+    out.write_all(ask_price1)?;
+    out.write_all(b" ")?;
+    out.write_all(ask_qty2)?;
+    out.write_all(b"@")?;
+    out.write_all(ask_price2)?;
+    out.write_all(b" ")?;
+    out.write_all(ask_qty3)?;
+    out.write_all(b"@")?;
+    out.write_all(ask_price3)?;
+    out.write_all(b" ")?;
+    out.write_all(ask_qty4)?;
+    out.write_all(b"@")?;
+    out.write_all(ask_price4)?;
+    out.write_all(b" ")?;
+    out.write_all(ask_qty5)?;
+    out.write_all(b"@")?;
+    out.write_all(ask_price5)?;
+    
+    out.write_all(b"\n")?;
+    Ok(())
+}
+
+
+#[inline(never)]
+pub fn print_quote_str<W: Write>(
+    out: &mut W,
+    quote: &QuotePacketView,
+    pkt_time: u64,
+    accept_time: u64,
+) -> io::Result<()> {
+
     let (bid_price1, bid_qty1) = quote.bid(0);
     let (bid_price2, bid_qty2) = quote.bid(1);
     let (bid_price3, bid_qty3) = quote.bid(2);
