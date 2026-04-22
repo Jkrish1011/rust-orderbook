@@ -41,12 +41,13 @@ impl<'a> HftWindow<'a> {
         pkt_time: u64,
         accept_time: u64,
         out: &mut W,
+        scratchpad: &mut Vec<u8>
     ) {
         let pkt_time_cs = pkt_time / 10_000;
 
         // Advance time using the centisecond time
         if pkt_time_cs > self.max_time_seen {
-            self.advance_time(pkt_time_cs, out);
+            self.advance_time(pkt_time_cs, out, scratchpad);
         }
 
         // Drop the new packet into its bucket
@@ -55,7 +56,8 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W) {
+    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W, scratchpad: &mut Vec<u8>) {
+
         // If the gap between the new packet and the oldest allowed packet
         // is > 300cs, we must drain and print the oldest buckets.
 
@@ -67,7 +69,7 @@ impl<'a> HftWindow<'a> {
 
             // Print everything in this bucket
             for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time);
+                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
             }
 
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
@@ -80,7 +82,7 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W) {
+    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W, scratchpad: &mut Vec<u8>) {
         let start_time = self.max_time_seen.saturating_sub(WINDOW_LIMIT_CS);
 
         // Print everything in this bucket
@@ -88,7 +90,7 @@ impl<'a> HftWindow<'a> {
             let idx = (t & MASK) as usize;
 
             for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time);
+                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
             }
             self.buckets[idx].clear();
         }
@@ -229,64 +231,40 @@ pub fn print_quote<W: Write>(
     quote: &QuotePacketView,
     pkt_time: u64,
     accept_time: u64,
+    scratchpad: &mut Vec<u8>
 ) -> io::Result<()> {
+    scratchpad.clear();
+
     let mut itoa_buf = itoa::Buffer::new();
+// 1. Add pkt_time and accept_time
+    scratchpad.extend_from_slice(itoa_buf.format(pkt_time).as_bytes());
+    scratchpad.push(b' ');
+    scratchpad.extend_from_slice(itoa_buf.format(accept_time).as_bytes());
+    scratchpad.push(b' ');
 
-    let (bid_price1, bid_qty1) = quote.bid_raw(0);
-    let (bid_price2, bid_qty2) = quote.bid_raw(1);
-    let (bid_price3, bid_qty3) = quote.bid_raw(2);
-    let (bid_price4, bid_qty4) = quote.bid_raw(3);
-    let (bid_price5, bid_qty5) = quote.bid_raw(4);
+    // 2. Add issue_code
+    scratchpad.extend_from_slice(quote.issue_code_raw());
 
-    let (ask_price1, ask_qty1) = quote.ask_raw(0);
-    let (ask_price2, ask_qty2) = quote.ask_raw(1);
-    let (ask_price3, ask_qty3) = quote.ask_raw(2);
-    let (ask_price4, ask_qty4) = quote.ask_raw(3);
-    let (ask_price5, ask_qty5) = quote.ask_raw(4);
+    // 3. Add Bids (Level 5 down to 1: indices 4, 3, 2, 1, 0)
+    for i in (0..5).rev() {
+        let (price, qty) = quote.bid(i);
+        scratchpad.push(b' ');
+        scratchpad.extend_from_slice(itoa_buf.format(qty).as_bytes());
+        scratchpad.push(b'@');
+        scratchpad.extend_from_slice(itoa_buf.format(price).as_bytes());
+    }
 
-    out.write_all(itoa_buf.format(pkt_time).as_bytes())?;
-    out.write_all(b" ")?;
-    out.write_all(bid_qty1)?;
-    out.write_all(b"@")?;
-    out.write_all(bid_price1)?;
-    out.write_all(b" ")?;
-    out.write_all(bid_qty2)?;
-    out.write_all(b"@")?;
-    out.write_all(bid_price2)?;
-    out.write_all(b" ")?;
-    out.write_all(bid_qty3)?;
-    out.write_all(b"@")?;
-    out.write_all(bid_price3)?;
-    out.write_all(b" ")?;
-    out.write_all(bid_qty4)?;
-    out.write_all(b"@")?;
-    out.write_all(bid_price4)?;
-    out.write_all(b" ")?;
-    out.write_all(bid_qty5)?;
-    out.write_all(b"@")?;
-    out.write_all(bid_price5)?;
-    out.write_all(b" ")?;
-    out.write_all(ask_qty1)?;
-    out.write_all(b"@")?;
-    out.write_all(ask_price1)?;
-    out.write_all(b" ")?;
-    out.write_all(ask_qty2)?;
-    out.write_all(b"@")?;
-    out.write_all(ask_price2)?;
-    out.write_all(b" ")?;
-    out.write_all(ask_qty3)?;
-    out.write_all(b"@")?;
-    out.write_all(ask_price3)?;
-    out.write_all(b" ")?;
-    out.write_all(ask_qty4)?;
-    out.write_all(b"@")?;
-    out.write_all(ask_price4)?;
-    out.write_all(b" ")?;
-    out.write_all(ask_qty5)?;
-    out.write_all(b"@")?;
-    out.write_all(ask_price5)?;
-    
-    out.write_all(b"\n")?;
+    // 4. Add Asks (Level 5 down to 1: indices 4, 3, 2, 1, 0)
+    for i in (0..5).rev() {
+        let (price, qty) = quote.ask(i);
+        scratchpad.push(b' ');
+        scratchpad.extend_from_slice(itoa_buf.format(qty).as_bytes());
+        scratchpad.push(b'@');
+        scratchpad.extend_from_slice(itoa_buf.format(price).as_bytes());
+    }
+
+    scratchpad.push(b'\n');
+    let _ = out.write_all(scratchpad);
     Ok(())
 }
 

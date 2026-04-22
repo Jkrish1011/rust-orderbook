@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::error::CustomError;
-use crate::packet::{HftWindow, QuotePacketView, print_quote};
+use crate::packet::{HftWindow, QuotePacketView, print_quote, QUOTE_PACKET_SIZE};
 use crate::parser::CustomPcapReader;
 
 #[derive(Parser, Debug)]
@@ -46,18 +46,16 @@ fn main() -> Result<(), CustomError> {
     let mut hft_window = HftWindow::new();
 
     let tz_offset_secs = 9 * 3600;
+    let mut scratchpad = Vec::with_capacity(512);
 
     for (hdr, packet) in custom_reader {
-        let Ok(value) = SlicedPacket::from_ethernet(packet) else {
-            continue;
-        };
+        if packet.len() < 42 + QUOTE_PACKET_SIZE { continue; }
+        
+        // Check port manually (bytes 36-37 are UDP Dest Port)
+        let d_port = u16::from_be_bytes([packet[36], packet[37]]);
+        if d_port != 15515 && d_port != 15516 { continue; }
 
-        let Some(TransportSlice::Udp(udp)) = value.transport else {
-            continue;
-        };
-
-        let payload = udp.payload();
-        let d_port = udp.destination_port();
+        let payload = &packet[42..];
 
         let Some(qp_view) = QuotePacketView::try_new(&payload, d_port) else {
             continue;
@@ -71,13 +69,13 @@ fn main() -> Result<(), CustomError> {
         let pkt_micros_of_day = seconds_today * 1_000_000 + ts_usec;
 
         if args.r {
-            hft_window.push(qp_view, pkt_micros_of_day, accept_time, &mut out);
+            hft_window.push(qp_view, pkt_micros_of_day, accept_time, &mut out, &mut scratchpad);
         } else {
-            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time);
+            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time, &mut scratchpad);
         }
     }
 
-    hft_window.drain_all(&mut out);
+    hft_window.drain_all(&mut out, &mut scratchpad);
 
     out.flush().unwrap(); // Ensure everything is written to stdout
 

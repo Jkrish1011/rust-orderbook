@@ -17,6 +17,10 @@ A command-line tool, written in Rust, that extracts and prints quote messages fr
 
 - Designed to work efficiently on files larger than available RAM: minimal allocations, byte-slice parsing, and streaming pcap reading.
 
+### To build the program
+```
+ RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
 
 ### To run the program
 
@@ -30,9 +34,9 @@ With 3 second time bound check
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap -r > /dev/null
 
-real    0m0.056s
-user    0m0.037s
-sys     0m0.020s
+real    0m0.022s
+user    0m0.018s
+sys     0m0.004s
 ```
 
 Without any time bound checks 
@@ -40,10 +44,14 @@ Without any time bound checks
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap > /dev/null
 
-real    0m0.045s
-user    0m0.030s
-sys     0m0.018s
+real    0m0.016s
+user    0m0.011s
+sys     0m0.005s
 ```
+
+### Samply
+
+![Alt text](./output/samply.png)
 
 
 ### System configuration
