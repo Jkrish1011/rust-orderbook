@@ -71,6 +71,16 @@ impl PcapPktHdr {
             orig_len: Self::read_u32(&bytes[12..16], meta.endian),
         }
     }
+
+    #[inline(always)]
+    fn pkt_time_of_day_ns(hdr: &PcapPktHdr, meta: PcapMeta, tz_offset_secs: u64) -> u64 {
+        let seconds_today = (hdr.ts_sec as u64 + tz_offset_secs) % 86_400;
+        let frac_ns = match meta.ts_res {
+            TsResolution::Micro => (hdr.ts_usec as u64) * 1_000,
+            TsResolution::Nano => hdr.ts_usec as u64,
+        };
+        seconds_today * 1_000_000_000 + frac_ns
+    }
 }
 
 pub struct CustomPcapReader<'a> {

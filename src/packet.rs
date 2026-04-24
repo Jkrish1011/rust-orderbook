@@ -13,13 +13,13 @@ pub const ASK_FIRST_QTY_META: &[usize; 2] = &[101, 7];
 pub const LEVEL_STRIDE: usize = 12;
 pub const END_OF_PACKET: usize = 214;
 const NUM_BUCKETS: usize = 512;
-const MAX_NO_PACKETS: usize = 256;
+const MAX_NO_PACKETS: usize = 1024;
+const TOTAL_CAPACITY: usize = NUM_BUCKETS * MAX_NO_PACKETS;
 const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
 
 pub struct HftWindow<'a> {
-    // NUM_BUCKETS, each can hold MAX_NO_PACKETS
-    buckets: [[(QuotePacketView<'a>, u64, u64); MAX_NO_PACKETS]; NUM_BUCKETS], // Pre-allocated array of arrays
+    buckets: Box<[(QuotePacketView<'a>, u64, u64)]>, // Pre-allocated Array on heap via Box.
     counts: [usize; NUM_BUCKETS],
     max_time_seen: u64,
 }
@@ -29,8 +29,10 @@ impl<'a> HftWindow<'a> {
         let qp = QuotePacketView::new_unchecked(&[]).unwrap();
         let entry = (qp, 0, 0);
         
+        let pool = vec![entry; TOTAL_CAPACITY].into_boxed_slice();
+
         Self {
-            buckets: [[entry; MAX_NO_PACKETS]; NUM_BUCKETS],
+            buckets: pool,
             counts: [0; NUM_BUCKETS],
             max_time_seen: 0,
         }
@@ -57,7 +59,9 @@ impl<'a> HftWindow<'a> {
         let curr_count = self.counts[index];
 
         if curr_count < MAX_NO_PACKETS {
-            self.buckets[index][curr_count] = (packet, pkt_time, accept_time);
+            // (index * MAX_NO_PACKETS) + curr_count
+            let flat_index = (index * MAX_NO_PACKETS) + curr_count;
+            self.buckets[flat_index] = (packet, pkt_time, accept_time);
             self.counts[index] += 1;
         }
     }
@@ -74,9 +78,10 @@ impl<'a> HftWindow<'a> {
         while drain_time < oldest_allowed {
             let idx = (drain_time & MASK) as usize;
             let count = self.counts[idx];
+            let base_idx = MAX_NO_PACKETS * idx;
 
             for i in 0..count {
-                let (pkt, p_time, a_time) = &self.buckets[idx][i];
+                let (pkt, p_time, a_time) = &self.buckets[base_idx + i];
                 let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
             
@@ -97,9 +102,10 @@ impl<'a> HftWindow<'a> {
         for t in start_time..=self.max_time_seen {
             let idx = (t & MASK) as usize;
             let count = self.counts[idx];
+            let base_idx = MAX_NO_PACKETS * idx;
 
             for i in 0..count {
-                let (pkt, p_time, a_time)  = &self.buckets[idx][i];
+                let (pkt, p_time, a_time)  = &self.buckets[base_idx + i];
                 let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
             self.counts[idx]= 0;
