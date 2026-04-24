@@ -19,17 +19,20 @@ const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
 
 pub struct HftWindow<'a> {
-    buckets: Box<[(QuotePacketView<'a>, u64, u64)]>, // Pre-allocated Array on heap via Box.
+    buckets: Vec<(QuotePacketView<'a>, u64, u64)>,
     counts: [usize; NUM_BUCKETS],
     max_time_seen: u64,
 }
 
 impl<'a> HftWindow<'a> {
     pub fn new() -> Self {
-        let qp = QuotePacketView::new_unchecked(&[]).unwrap();
-        let entry = (qp, 0, 0);
         
-        let pool = vec![entry; TOTAL_CAPACITY].into_boxed_slice();
+        let mut pool = Vec::with_capacity(TOTAL_CAPACITY);
+
+        // by using unsafe we tell the OS to not zeroing this
+        unsafe {
+            pool.set_len(TOTAL_CAPACITY);
+        }
 
         Self {
             buckets: pool,
@@ -61,7 +64,10 @@ impl<'a> HftWindow<'a> {
         if curr_count < MAX_NO_PACKETS {
             // (index * MAX_NO_PACKETS) + curr_count
             let flat_index = (index * MAX_NO_PACKETS) + curr_count;
-            self.buckets[flat_index] = (packet, pkt_time, accept_time);
+            
+            unsafe {
+                *self.buckets.get_unchecked_mut(flat_index) = (packet, pkt_time, accept_time);
+            }
             self.counts[index] += 1;
         }
     }
@@ -81,7 +87,9 @@ impl<'a> HftWindow<'a> {
             let base_idx = MAX_NO_PACKETS * idx;
 
             for i in 0..count {
-                let (pkt, p_time, a_time) = &self.buckets[base_idx + i];
+                let (pkt, p_time, a_time) = unsafe {
+                    self.buckets.get_unchecked(base_idx + i)
+                };
                 let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
             
@@ -105,7 +113,9 @@ impl<'a> HftWindow<'a> {
             let base_idx = MAX_NO_PACKETS * idx;
 
             for i in 0..count {
-                let (pkt, p_time, a_time)  = &self.buckets[base_idx + i];
+                let (pkt, p_time, a_time)  = unsafe {
+                    self.buckets.get_unchecked(base_idx + i)
+                };
                 let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
             self.counts[idx]= 0;

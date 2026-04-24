@@ -34,9 +34,9 @@ With 3 second time bound check
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap -r > /dev/null
 
-real    0m0.037s
-user    0m0.024s
-sys     0m0.012s
+real    0m0.026s
+user    0m0.022s
+sys     0m0.005s
 ```
 
 Without any time bound checks 
@@ -44,9 +44,9 @@ Without any time bound checks
 ```
 time target/release/rust-orderbook --file ./data/mdf-kospi200.20110216-0.pcap > /dev/null
 
-real    0m0.026s
-user    0m0.014s
-sys     0m0.012s
+real    0m0.013s
+user    0m0.011s
+sys     0m0.003s
 ```
 
 ### Samply
