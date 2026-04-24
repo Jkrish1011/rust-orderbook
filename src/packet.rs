@@ -13,23 +13,25 @@ pub const ASK_FIRST_QTY_META: &[usize; 2] = &[101, 7];
 pub const LEVEL_STRIDE: usize = 12;
 pub const END_OF_PACKET: usize = 214;
 const NUM_BUCKETS: usize = 512;
+const MAX_NO_PACKETS: usize = 256;
 const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
 
 pub struct HftWindow<'a> {
-    buckets: Vec<Vec<(QuotePacketView<'a>, u64, u64)>>, // Pre-allocated array of arrays
+    // NUM_BUCKETS, each can hold MAX_NO_PACKETS
+    buckets: [[(QuotePacketView<'a>, u64, u64); MAX_NO_PACKETS]; NUM_BUCKETS], // Pre-allocated array of arrays
+    counts: [usize; NUM_BUCKETS],
     max_time_seen: u64,
 }
 
 impl<'a> HftWindow<'a> {
     pub fn new() -> Self {
-        let mut buckets = Vec::with_capacity(NUM_BUCKETS);
-        for _ in 0..NUM_BUCKETS {
-            // Guessing max 32768 packets arrive in the exact same 10ms window
-            buckets.push(Vec::with_capacity(128));
-        }
+        let qp = QuotePacketView::new_unchecked(&[]).unwrap();
+        let entry = (qp, 0, 0);
+        
         Self {
-            buckets,
+            buckets: [[entry; MAX_NO_PACKETS]; NUM_BUCKETS],
+            counts: [0; NUM_BUCKETS],
             max_time_seen: 0,
         }
     }
@@ -51,8 +53,13 @@ impl<'a> HftWindow<'a> {
         }
 
         // Drop the new packet into its bucket
-        let index = pkt_time_cs & MASK;
-        self.buckets[index as usize].push((packet, pkt_time, accept_time));
+        let index = (pkt_time_cs & MASK) as usize;
+        let curr_count = self.counts[index];
+
+        if curr_count < MAX_NO_PACKETS {
+            self.buckets[index][curr_count] = (packet, pkt_time, accept_time);
+            self.counts[index] += 1;
+        }
     }
 
     #[inline(always)]
@@ -66,14 +73,15 @@ impl<'a> HftWindow<'a> {
 
         while drain_time < oldest_allowed {
             let idx = (drain_time & MASK) as usize;
+            let count = self.counts[idx];
 
-            // Print everything in this bucket
-            for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
+            for i in 0..count {
+                let (pkt, p_time, a_time) = &self.buckets[idx][i];
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
-
+            
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
-            self.buckets[idx].clear();
+            self.counts[idx] = 0;
 
             drain_time += 1;
         }
@@ -88,11 +96,13 @@ impl<'a> HftWindow<'a> {
         // Print everything in this bucket
         for t in start_time..=self.max_time_seen {
             let idx = (t & MASK) as usize;
+            let count = self.counts[idx];
 
-            for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
+            for i in 0..count {
+                let (pkt, p_time, a_time)  = &self.buckets[idx][i];
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad);
             }
-            self.buckets[idx].clear();
+            self.counts[idx]= 0;
         }
     }
 }
@@ -236,7 +246,7 @@ pub fn print_quote<W: Write>(
     scratchpad.clear();
 
     let mut itoa_buf = itoa::Buffer::new();
-// 1. Add pkt_time and accept_time
+    // 1. Add pkt_time and accept_time
     scratchpad.extend_from_slice(itoa_buf.format(pkt_time).as_bytes());
     scratchpad.push(b' ');
     scratchpad.extend_from_slice(itoa_buf.format(accept_time).as_bytes());
