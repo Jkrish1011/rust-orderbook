@@ -50,6 +50,7 @@ fn main() -> Result<(), CustomError> {
 
     let tz_offset_secs = 9 * 3600;
     let mut scratchpad = Vec::with_capacity(512);
+    let mut itoa_buf = itoa::Buffer::new();
 
     for (hdr, packet) in custom_reader {
         if packet.len() < 42 + QUOTE_PACKET_SIZE { continue; }
@@ -72,13 +73,13 @@ fn main() -> Result<(), CustomError> {
         let pkt_micros_of_day = seconds_today * 1_000_000 + ts_usec;
 
         if args.r {
-            hft_window.push(qp_view, pkt_micros_of_day, accept_time_ns, &mut out, &mut scratchpad, args.bench);
+            hft_window.push(qp_view, pkt_micros_of_day, accept_time_ns, &mut out, &mut scratchpad, &mut itoa_buf, args.bench);
         } else {
-            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time_ns, &mut scratchpad, args.bench);
+            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time_ns, &mut scratchpad, &mut itoa_buf, args.bench);
         }
     }
 
-    hft_window.drain_all(&mut out, &mut scratchpad, args.bench);
+    hft_window.drain_all(&mut out, &mut scratchpad, &mut itoa_buf, args.bench);
 
     out.flush().unwrap(); // Ensure everything is written to stdout
 

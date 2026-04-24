@@ -50,13 +50,14 @@ impl<'a> HftWindow<'a> {
         accept_time_ns: u64,
         out: &mut W,
         scratchpad: &mut Vec<u8>,
+        itoa_buf: &mut itoa::Buffer,
         bench_mod: bool,
     ) {
         let pkt_time_cs = pkt_time_ns / CS_TO_NS;
 
         // Advance time using the centisecond time
         if pkt_time_cs > self.max_time_seen {
-            self.advance_time(pkt_time_cs, out, scratchpad, bench_mod);
+            self.advance_time(pkt_time_cs, out, scratchpad, itoa_buf, bench_mod);
         }
 
         // Drop the new packet into its bucket
@@ -75,7 +76,7 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W, scratchpad: &mut Vec<u8>, bench_mod: bool) {
+    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W, scratchpad: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, bench_mod: bool) {
 
         // If the gap between the new packet and the oldest allowed packet
         // is > 300cs, we must drain and print the oldest buckets.
@@ -92,7 +93,7 @@ impl<'a> HftWindow<'a> {
                 let (pkt, p_time, a_time) = unsafe {
                     self.buckets.get_unchecked(base_idx + i)
                 };
-                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, bench_mod);
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, itoa_buf, bench_mod);
             }
             
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
@@ -105,7 +106,7 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W, scratchpad: &mut Vec<u8>, bench_mod: bool) {
+    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W, scratchpad: &mut Vec<u8>, itoa_buf: &mut itoa::Buffer, bench_mod: bool) {
         let start_time = self.max_time_seen.saturating_sub(WINDOW_LIMIT_CS);
 
         // Print everything in this bucket
@@ -118,7 +119,7 @@ impl<'a> HftWindow<'a> {
                 let (pkt, p_time, a_time)  = unsafe {
                     self.buckets.get_unchecked(base_idx + i)
                 };
-                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, bench_mod);
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, itoa_buf, bench_mod);
             }
             self.counts[idx]= 0;
         }
@@ -276,6 +277,7 @@ pub fn print_quote<W: Write>(
     pkt_time: u64,
     accept_time: u64,
     scratchpad: &mut Vec<u8>,
+    itoa_buf: &mut itoa::Buffer,
     bench_mod: bool,
 ) -> io::Result<()> {
 
@@ -284,7 +286,7 @@ pub fn print_quote<W: Write>(
     }
     scratchpad.clear();
 
-    let mut itoa_buf = itoa::Buffer::new();
+    // let mut itoa_buf = itoa::Buffer::new();
     // 1. Add pkt_time and accept_time
     scratchpad.extend_from_slice(itoa_buf.format(pkt_time).as_bytes());
     scratchpad.push(b' ');
