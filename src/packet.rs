@@ -13,23 +13,31 @@ pub const ASK_FIRST_QTY_META: &[usize; 2] = &[101, 7];
 pub const LEVEL_STRIDE: usize = 12;
 pub const END_OF_PACKET: usize = 214;
 const NUM_BUCKETS: usize = 512;
+const MAX_NO_PACKETS: usize = 1024;
+const TOTAL_CAPACITY: usize = NUM_BUCKETS * MAX_NO_PACKETS;
 const MASK: u64 = 511;
 const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
+const CS_TO_NS: u64 = 10_000_000;
 
 pub struct HftWindow<'a> {
-    buckets: Vec<Vec<(QuotePacketView<'a>, u64, u64)>>, // Pre-allocated array of arrays
+    buckets: Vec<(QuotePacketView<'a>, u64, u64)>,
+    counts: [usize; NUM_BUCKETS],
     max_time_seen: u64,
 }
 
 impl<'a> HftWindow<'a> {
     pub fn new() -> Self {
-        let mut buckets = Vec::with_capacity(NUM_BUCKETS);
-        for _ in 0..NUM_BUCKETS {
-            // Guessing max 32768 packets arrive in the exact same 10ms window
-            buckets.push(Vec::with_capacity(128));
+        
+        let mut pool = Vec::with_capacity(TOTAL_CAPACITY);
+
+        // by using unsafe we tell the OS to not zeroing this
+        unsafe {
+            pool.set_len(TOTAL_CAPACITY);
         }
+
         Self {
-            buckets,
+            buckets: pool,
+            counts: [0; NUM_BUCKETS],
             max_time_seen: 0,
         }
     }
@@ -38,25 +46,36 @@ impl<'a> HftWindow<'a> {
     pub fn push<W: std::io::Write>(
         &mut self,
         packet: QuotePacketView<'a>,
-        pkt_time: u64,
-        accept_time: u64,
+        pkt_time_ns: u64,
+        accept_time_ns: u64,
         out: &mut W,
-        scratchpad: &mut Vec<u8>
+        scratchpad: &mut Vec<u8>,
+        bench_mod: bool,
     ) {
-        let pkt_time_cs = pkt_time / 10_000;
+        let pkt_time_cs = pkt_time_ns / CS_TO_NS;
 
         // Advance time using the centisecond time
         if pkt_time_cs > self.max_time_seen {
-            self.advance_time(pkt_time_cs, out, scratchpad);
+            self.advance_time(pkt_time_cs, out, scratchpad, bench_mod);
         }
 
         // Drop the new packet into its bucket
-        let index = pkt_time_cs & MASK;
-        self.buckets[index as usize].push((packet, pkt_time, accept_time));
+        let index = (pkt_time_cs & MASK) as usize;
+        let curr_count = self.counts[index];
+
+        if curr_count < MAX_NO_PACKETS {
+            // (index * MAX_NO_PACKETS) + curr_count
+            let flat_index = (index * MAX_NO_PACKETS) + curr_count;
+            
+            unsafe {
+                *self.buckets.get_unchecked_mut(flat_index) = (packet, pkt_time_ns, accept_time_ns);
+            }
+            self.counts[index] += 1;
+        }
     }
 
     #[inline(always)]
-    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W, scratchpad: &mut Vec<u8>) {
+    fn advance_time<W: std::io::Write>(&mut self, p_time: u64, out: &mut W, scratchpad: &mut Vec<u8>, bench_mod: bool) {
 
         // If the gap between the new packet and the oldest allowed packet
         // is > 300cs, we must drain and print the oldest buckets.
@@ -66,14 +85,18 @@ impl<'a> HftWindow<'a> {
 
         while drain_time < oldest_allowed {
             let idx = (drain_time & MASK) as usize;
+            let count = self.counts[idx];
+            let base_idx = MAX_NO_PACKETS * idx;
 
-            // Print everything in this bucket
-            for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
+            for i in 0..count {
+                let (pkt, p_time, a_time) = unsafe {
+                    self.buckets.get_unchecked(base_idx + i)
+                };
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, bench_mod);
             }
-
+            
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
-            self.buckets[idx].clear();
+            self.counts[idx] = 0;
 
             drain_time += 1;
         }
@@ -82,17 +105,22 @@ impl<'a> HftWindow<'a> {
     }
 
     #[inline(always)]
-    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W, scratchpad: &mut Vec<u8>) {
+    pub fn drain_all<W: std::io::Write>(&mut self, out: &mut W, scratchpad: &mut Vec<u8>, bench_mod: bool) {
         let start_time = self.max_time_seen.saturating_sub(WINDOW_LIMIT_CS);
 
         // Print everything in this bucket
         for t in start_time..=self.max_time_seen {
             let idx = (t & MASK) as usize;
+            let count = self.counts[idx];
+            let base_idx = MAX_NO_PACKETS * idx;
 
-            for (pkt, p_time, a_time) in &self.buckets[idx] {
-                let _ = print_quote(out, &pkt, *p_time, *a_time, scratchpad);
+            for i in 0..count {
+                let (pkt, p_time, a_time)  = unsafe {
+                    self.buckets.get_unchecked(base_idx + i)
+                };
+                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, bench_mod);
             }
-            self.buckets[idx].clear();
+            self.counts[idx]= 0;
         }
     }
 }
@@ -145,6 +173,22 @@ impl<'a> QuotePacketView<'a> {
      #[inline(always)]
     pub fn issue_code_raw(&self) -> &'a [u8] {
         &self.raw[ISSUE_CODE_META[0]..(ISSUE_CODE_META[0] + ISSUE_CODE_META[1])]
+    }
+
+    #[inline(always)]
+    pub fn accept_time_ns(&self) -> u64 {
+        let time_ref = unsafe {
+            self.raw.get_unchecked(ACCEPT_TIME_META[0]..(ACCEPT_TIME_META[0] + ACCEPT_TIME_META[1]))
+        };
+
+        let hh = ((time_ref[0] & 0x0F) as u64) * 10 + ((time_ref[1] & 0x0F) as u64);
+        let mm = ((time_ref[2] & 0x0F) as u64) * 10 + ((time_ref[3] & 0x0F) as u64);
+        let ss = ((time_ref[4] & 0x0F) as u64) * 10 + ((time_ref[5] & 0x0F) as u64);
+        let uu = ((time_ref[6] & 0x0F) as u64) * 10 + ((time_ref[7] & 0x0F) as u64);
+
+        // Convert everything to Nanoseconds
+        // (hh:mm:ss) to seconds * 1e9 + centiseconds (uu) * 1e7
+        (hh * 3600 + mm * 60 + ss) * 1_000_000_000 + (uu * 10_000_000)
     }
 
     #[inline(always)]
@@ -231,12 +275,17 @@ pub fn print_quote<W: Write>(
     quote: &QuotePacketView,
     pkt_time: u64,
     accept_time: u64,
-    scratchpad: &mut Vec<u8>
+    scratchpad: &mut Vec<u8>,
+    bench_mod: bool,
 ) -> io::Result<()> {
+
+    if bench_mod {
+        return Ok(());
+    }
     scratchpad.clear();
 
     let mut itoa_buf = itoa::Buffer::new();
-// 1. Add pkt_time and accept_time
+    // 1. Add pkt_time and accept_time
     scratchpad.extend_from_slice(itoa_buf.format(pkt_time).as_bytes());
     scratchpad.push(b' ');
     scratchpad.extend_from_slice(itoa_buf.format(accept_time).as_bytes());

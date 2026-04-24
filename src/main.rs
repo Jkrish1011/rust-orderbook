@@ -23,6 +23,9 @@ struct Args {
 
     #[arg(short, long)]
     file: String,
+
+    #[arg(short, long)]
+    bench: bool,
 }
 
 fn main() -> Result<(), CustomError> {
@@ -61,7 +64,7 @@ fn main() -> Result<(), CustomError> {
             continue;
         };
 
-        let accept_time = qp_view.accept_time();
+        let accept_time_ns = qp_view.accept_time_ns();
         let ts_sec = hdr.ts_sec as u64;
         let ts_usec = hdr.ts_usec as u64;
 
@@ -69,13 +72,13 @@ fn main() -> Result<(), CustomError> {
         let pkt_micros_of_day = seconds_today * 1_000_000 + ts_usec;
 
         if args.r {
-            hft_window.push(qp_view, pkt_micros_of_day, accept_time, &mut out, &mut scratchpad);
+            hft_window.push(qp_view, pkt_micros_of_day, accept_time_ns, &mut out, &mut scratchpad, args.bench);
         } else {
-            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time, &mut scratchpad);
+            let _ = print_quote(&mut out, &qp_view, pkt_micros_of_day, accept_time_ns, &mut scratchpad, args.bench);
         }
     }
 
-    hft_window.drain_all(&mut out, &mut scratchpad);
+    hft_window.drain_all(&mut out, &mut scratchpad, args.bench);
 
     out.flush().unwrap(); // Ensure everything is written to stdout
 
