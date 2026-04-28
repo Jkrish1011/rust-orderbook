@@ -1,5 +1,6 @@
 use std::{
     io::{self, Write},
+    mem::MaybeUninit,
 };
 
 pub const QUOTE_PACKET_SIZE: usize = 215;
@@ -20,7 +21,7 @@ const WINDOW_LIMIT_CS: u64 = 300; // 3 seconds
 const CS_TO_NS: u64 = 10_000_000;
 
 pub struct HftWindow<'a> {
-    buckets: Vec<(QuotePacketView<'a>, u64, u64)>,
+    buckets: Vec<MaybeUninit<(QuotePacketView<'a>, u64, u64)>>,
     counts: [usize; NUM_BUCKETS],
     max_time_seen: u64,
 }
@@ -28,11 +29,11 @@ pub struct HftWindow<'a> {
 impl<'a> HftWindow<'a> {
     pub fn new() -> Self {
         
-        let mut pool = Vec::with_capacity(TOTAL_CAPACITY);
+        let mut pool: Vec<MaybeUninit<(QuotePacketView, u64, u64)>> = Vec::with_capacity(TOTAL_CAPACITY);
 
         // by using unsafe we tell the OS to not zeroing this
-        unsafe {
-            pool.set_len(TOTAL_CAPACITY);
+        unsafe { 
+            pool.set_len(TOTAL_CAPACITY); 
         }
 
         Self {
@@ -69,7 +70,7 @@ impl<'a> HftWindow<'a> {
             let flat_index = (index * MAX_NO_PACKETS) + curr_count;
             
             unsafe {
-                *self.buckets.get_unchecked_mut(flat_index) = (packet, pkt_time_ns, accept_time_ns);
+                self.buckets[flat_index] = MaybeUninit::new((packet, pkt_time_ns, accept_time_ns));
             }
             self.counts[index] += 1;
         }
@@ -91,9 +92,9 @@ impl<'a> HftWindow<'a> {
 
             for i in 0..count {
                 let (pkt, p_time, a_time) = unsafe {
-                    self.buckets.get_unchecked(base_idx + i)
+                    self.buckets[base_idx + i].assume_init()
                 };
-                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, itoa_buf, bench_mod);
+                let _ = print_quote(out, &pkt, p_time, a_time, scratchpad, itoa_buf, bench_mod);
             }
             
             // CLEAR the bucket for future use (keeps capacity, sets length to 0)
@@ -117,9 +118,9 @@ impl<'a> HftWindow<'a> {
 
             for i in 0..count {
                 let (pkt, p_time, a_time)  = unsafe {
-                    self.buckets.get_unchecked(base_idx + i)
+                    self.buckets[base_idx + i].assume_init()
                 };
-                let _ = print_quote(out, pkt, *p_time, *a_time, scratchpad, itoa_buf, bench_mod);
+                let _ = print_quote(out, &pkt, p_time, a_time, scratchpad, itoa_buf, bench_mod);
             }
             self.counts[idx]= 0;
         }
